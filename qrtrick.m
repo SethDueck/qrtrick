@@ -5,9 +5,11 @@ qrdata = ssdata;
 
 qrvecs   = nan(size(qrdata,1),numQRVecs); 
 qrproj = nan(numQRVecs,size(qrdata,2)); 
+qrIndices = nan([numQRVecs 1]); 
 
 for nidx = 1:numQRVecs 
     [~,maxidx] = max(sum(abs(qrdata),1)); 
+    qrIndices(nidx) = maxidx; 
     
     qrunit = qrdata(:,maxidx); 
     qrunit = qrunit / sqrt(sum(qrunit.^2)); 
@@ -22,11 +24,6 @@ for nidx = 1:numQRVecs
     
 end 
 
-qrproj_norm = qrproj; 
-for didx = 1:size(qrproj_norm,1) 
-    qrproj_norm(didx,:) = qrproj_norm(didx,:) / sqrt(sum(qrproj_norm(didx,:).^2)); 
-end 
-
 [v2,d2] = eig(abs(qrvecs)'*abs(qrvecs) - qrvecs'*qrvecs); 
 [d2,sortfilter] = sort(diag(real(d2)),'descend'); 
 v2 = v2(:,sortfilter); 
@@ -38,7 +35,8 @@ for aidx = 1:size(a,1)
     a_n(aidx,:) = a_n(aidx,:) / sqrt(sum(a_n(aidx,:).^2)); 
 end 
 dataproj = ssdata*a_n'; 
-% scatter3(temp(:,end-2),temp(:,end-1),temp(:,end),2,fs(:,70)./ss(:,70))
+dataproj_orig = dataproj; % Copy original state of dataproj 
+% TODO should replace lines below with #qrtrick_makeDataCovMatrix 
 dCovMatrix = nan([1 1]*size(dataproj,2)); 
 for bidx1 = 1:size(dCovMatrix,1) 
     dCovMatrix(bidx1,bidx1) = 0; % Give value to diagonal so this can be plotted 
@@ -64,12 +62,14 @@ end
 % Use sindy to find order 1 relationships 
 pointWeights = ones([size(dataproj,1) 1]); 
 maxNumLinTerms = 6; 
-for linidx = 1:maxNumLinTerms  
-    if(linidx > size(dataproj,2)) 
-        warning('Trying to fit to more dims than there are dims remaining'); 
-        break; 
+target_numDims = 3; 
+linidx = 2; 
+while size(dataproj,2)>target_numDims 
+    if( size(dataproj,2)>(linidx+1) ) 
+        linidx = linidx+1; 
+    else 
+        linidx = 2; 
     end 
-    
     if(numel(linearDepOrder)~=size(dataproj,2)) 
         % Lazy way to avoid recalculating linearDepOrder after the first
         % round. Not sure if this the order is actually useful anyway;
@@ -203,17 +203,6 @@ for didx = 1:numel(degenSortOrder)
 %         replacementColumns = [replacementColumns; ones([sum(~keepDimFlag+0) 1])*thisSetDegenCols(find(keepDimFlag,1,'first'))];  %#ok<AGROW>
     end 
     nan(0); 
-
-    % Replace variables with xi 
-    % For now I will just exclude columns -- should really create var xi
-    % and replace ALL data with "smoothed" data, not just remove one
-    % dimension at random. 
-    % AND the actual deletion happens later -- I'm really just making a
-    % list of what to delete later. 
-    % Decide how many columns to exclude 
-
-    nan(0); 
-    
 end 
 
 if( any( ismember(columnsToDelete,touchedColumns) ) ) 
@@ -223,43 +212,6 @@ if( numel(columnsToDelete) ~= numel(unique(columnsToDelete)) )
     warning('Columns deleted more than once') 
 end 
 
-% % Delete columns 
-% % Change references to columns that will be deleted 
-% for cidx = 1:numel(columnsToDelete) 
-%     mostLinearDep(mostLinearDep(:)==columnsToDelete(cidx)) = replacementColumns(cidx); % Update indexing for references to rows that will be deleted. Should be updated to reference xi; currently I just ref back to the not-deleted data column 
-% end 
-% % Check for self reference -- we will get x_i=x_i from the regression if
-% % x_i is fed in as an independent variable on the next round. 
-% mayHaveSelfReference = true; 
-% while( mayHaveSelfReference ) 
-%     mayHaveSelfReference = false; % Repeat in case self-reference is found 
-% for cidx = 1:size(dataproj,2) 
-%     if( cidx==mostLinearDep(cidx,1) ) 
-%         % Bump self-reference to the end of the list of candidate indep 
-%         % vars; just permute the sequence. There may be problems because I
-%         % don't check for uniqueness within the rows here. 
-%         mostLinearDep(cidx,1:end-1) = mostLinearDep(cidx,2:end); 
-%         mostLinearDep(cidx,end)     = mostLinearDep(cidx,end); 
-%         mayHaveSelfReference = true; 
-%         nan(0); 
-%     end 
-% end 
-% end 
-% 
-% % Indexing will change when dims are deleted -- figure out how much to subtract from each dimension index 
-% dimIndexShift = cumsum( ismember(1:size(dataproj,2),columnsToDelete) + 0 ); 
-% % Do the subtraction 
-% for cidx = 1:size(dataproj,2) 
-%     mostLinearDep(mostLinearDep(:)==cidx) = cidx - dimIndexShift(cidx); 
-% end 
-% mostLinearDep(columnsToDelete,:) = []; % Delete rows because dimensions are being deleted 
-% % Delete redundant columns 
-% mostLinearDep_new = nan([1 1]*size(mostLinearDep,1)); 
-% for cidx = 1:size(mostLinearDep,1) 
-%     mostLinearDep_new(cidx,:) = unique(mostLinearDep(cidx,:),'stable'); 
-% end 
-% mostLinearDep = mostLinearDep_new; 
-
 dataproj(:,columnsToDelete) = []; 
 
     % Remake dataproj covariance matrix and ranking matrix 
@@ -267,6 +219,9 @@ dataproj(:,columnsToDelete) = [];
     dCovMatrix(touchedColumns,:) = nan; 
     dCovMatrix(:,columnsToDelete) = []; 
     dCovMatrix(columnsToDelete,:) = []; 
+    
+    [ temp1, temp2] = qrtrick_makeDataCovMatrix( dataproj, dCovMatrix ); 
+    
     for bidx1 = 1:size(dataproj,2) 
         for bidx2 = (bidx1+1):size(dataproj,2)
             if(isnan(dCovMatrix(bidx1,bidx2)) ) 
@@ -287,11 +242,77 @@ dataproj(:,columnsToDelete) = [];
 nan(0); 
 end
 
-[v,d] = eig(qrproj*qrproj'); 
-[d,sortfilter] = sort(diag(real(d)),'descend'); 
-v = v(:,sortfilter); 
+% Find sensor points that best capture behaviour of original dataset 
+% [v,d] = eig(dorig'*dorig); 
+% [d,sortfilter] = sort(real(diag(d)),'descend'); 
+% v = v(:,sortfilter); 
+sensorPlacementData = dataproj_orig; 
+numPivotPoints = 50; 
+if(numPivotPoints>size(sensorPlacementData,2)) 
+    % Cap number of sensors at number of dimensions in placement data; 
+    % don't fit to noise. 
+    numPivotPoints = size(sensorPlacementData,2); 
+end 
+pivotPointList = nan([numPivotPoints 1]); 
+for pidx = 1:numPivotPoints 
+    [~,midx] = max(sum(abs(sensorPlacementData),2)); 
+    pivotPointList(pidx) = midx; 
+    pivotUnit = sensorPlacementData(midx,:); 
+    pivotUnit = pivotUnit / sqrt(sum(pivotUnit.*pivotUnit)); 
+    pivotScore = sensorPlacementData*pivotUnit'; 
+    sensorPlacementData = sensorPlacementData - pivotScore*pivotUnit; 
+end 
 
+% Try to make sharp/flattened auxiliary vectors 
+for didx = 1:size(dataproj_orig,2) 
+    for tempidx = 1:5
+        exp(-dataproj_orig); 
+    end
+end 
 
+% Make basis for decomposing radiances 
+[vret,dret] = eig(dataproj_orig'*dataproj_orig); 
+[dret,sortfilter] = sort(real(diag(dret)),'descend'); 
+vret = vret(:,sortfilter); 
+vp = dataproj_orig*vret; 
+auxv = [ ...
+      linspace( 1, 1, size(vp,1))', ... 
+      linspace( 0, 1, size(vp,1))', ... 
+      linspace( 0, 1, size(vp,1))'.^2 ... 
+%       linspace(-1, 1, size(vp,1))'.^2 ... 
+%       linspace(-1, 0, size(vp,1))'.^2 ... 
+      ]; 
+%   auxv = [];
+vp = [auxv, vp]; 
+vp_small = vp(pivotPointList,:); 
+for didx = 1:size(vp,2)  
+    vp(:,didx) = vp(:,didx) / sqrt(sum(vp(:,didx).^2)); 
+    vp_small(:,didx) = vp_small(:,didx) / sqrt(sum(vp_small(:,didx).^2)); 
+    for didx0 = 1:didx-1 % re-orthogonalize data after adding in aux dims 
+        vp(:,didx) = vp(:,didx) - vp(:,didx0)*(vp(:,didx)'*vp(:,didx0));
+        vp_small(:,didx) = vp_small(:,didx) - vp_small(:,didx0)*(vp_small(:,didx)'*vp_small(:,didx0)); 
+    end 
+    vp(:,didx) = vp(:,didx) / sqrt(sum(vp(:,didx).^2)); 
+    vp_small(:,didx) = vp_small(:,didx) / sqrt(sum(vp_small(:,didx).^2));
+end 
+
+sr3basis = [dataproj,ones([size(dataproj,1) 1])]; 
+
+% fakerad = dataproj_orig(:,4); 
+fakerad = sum(vp,2); 
+fakerad = vp(:,4); 
+fakerad = fs(:,70)-ss(:,70); 
+xk = qrtrick_invert(vp_small, fakerad(pivotPointList,:)); 
+xk = qrtrick_invert(sr3basis(pivotPointList,:),fakerad(pivotPointList,:)); 
+
+figure(8) 
+clf 
+hold all 
+% scatter3(dataproj(:,3),dataproj(:,2),dataproj(:,1),2,fakerad) 
+plot(fakerad)
+plot((fakerad'*vp)*vp') 
+% plot((fakerad(pivotPointList,:)'*vp_small)*vp')
+plot(sr3basis*xk); 
 
 nan(0); 
 
